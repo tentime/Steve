@@ -19,40 +19,47 @@ public class TaskPlanner {
     private final GeminiClient geminiClient;
     private final GroqClient groqClient;
 
-    // NEW: Async resilient clients
-    private final AsyncLLMClient asyncOpenAIClient;
-    private final AsyncLLMClient asyncGroqClient;
-    private final AsyncLLMClient asyncGeminiClient;
-    private final LLMCache llmCache;
-    private final LLMFallbackHandler fallbackHandler;
+    // Async resilient clients (lazy-initialized, requires Caffeine/Resilience4j)
+    private AsyncLLMClient asyncOpenAIClient;
+    private AsyncLLMClient asyncGroqClient;
+    private AsyncLLMClient asyncGeminiClient;
+    private LLMCache llmCache;
+    private LLMFallbackHandler fallbackHandler;
+    private boolean asyncInitialized = false;
 
     public TaskPlanner() {
-        // Legacy clients
+        // Legacy synchronous clients — these always work
         this.openAIClient = new OpenAIClient();
         this.geminiClient = new GeminiClient();
         this.groqClient = new GroqClient();
 
-        // Initialize async infrastructure
+        // Try to initialize async infrastructure (requires bundled dependencies)
+        try {
+            initAsyncClients();
+            asyncInitialized = true;
+            SteveMod.LOGGER.info("TaskPlanner initialized with async resilient clients");
+        } catch (NoClassDefFoundError | Exception e) {
+            asyncInitialized = false;
+            SteveMod.LOGGER.warn("Async LLM clients unavailable (missing dependencies: {}). Using synchronous clients.", e.getMessage());
+        }
+    }
+
+    private void initAsyncClients() {
         this.llmCache = new LLMCache();
         this.fallbackHandler = new LLMFallbackHandler();
 
-        // Initialize async clients with resilience wrappers
         String apiKey = SteveConfig.OPENAI_API_KEY.get();
         String model = SteveConfig.OPENAI_MODEL.get();
         int maxTokens = SteveConfig.MAX_TOKENS.get();
         double temperature = SteveConfig.TEMPERATURE.get();
 
-        // Create base async clients
         AsyncLLMClient baseOpenAI = new AsyncOpenAIClient(apiKey, model, maxTokens, temperature);
         AsyncLLMClient baseGroq = new AsyncGroqClient(apiKey, "llama-3.1-8b-instant", 500, temperature);
         AsyncLLMClient baseGemini = new AsyncGeminiClient(apiKey, "gemini-1.5-flash", maxTokens, temperature);
 
-        // Wrap with resilience patterns
         this.asyncOpenAIClient = new ResilientLLMClient(baseOpenAI, llmCache, fallbackHandler);
         this.asyncGroqClient = new ResilientLLMClient(baseGroq, llmCache, fallbackHandler);
         this.asyncGeminiClient = new ResilientLLMClient(baseGemini, llmCache, fallbackHandler);
-
-        SteveMod.LOGGER.info("TaskPlanner initialized with async resilient clients");
     }
 
     public ResponseParser.ParsedResponse planTasks(SteveEntity steve, String command) {
@@ -69,7 +76,9 @@ public class TaskPlanner {
             if (response == null) {
                 SteveMod.LOGGER.error("Failed to get AI response for command: {}", command);
                 return null;
-            }            ResponseParser.ParsedResponse parsedResponse = ResponseParser.parseAIResponse(response);
+            }
+
+            ResponseParser.ParsedResponse parsedResponse = ResponseParser.parseAIResponse(response);
             
             if (parsedResponse == null) {
                 SteveMod.LOGGER.error("Failed to parse AI response");
@@ -121,6 +130,12 @@ public class TaskPlanner {
      * @return CompletableFuture that completes with the parsed response, or null on failure
      */
     public CompletableFuture<ResponseParser.ParsedResponse> planTasksAsync(SteveEntity steve, String command) {
+        // Fall back to sync if async dependencies are missing
+        if (!asyncInitialized) {
+            SteveMod.LOGGER.info("[Async] Falling back to synchronous planning (async unavailable)");
+            return CompletableFuture.supplyAsync(() -> planTasks(steve, command));
+        }
+
         try {
             String systemPrompt = PromptBuilder.buildSystemPrompt();
             WorldKnowledge worldKnowledge = new WorldKnowledge(steve);
@@ -238,4 +253,3 @@ public class TaskPlanner {
             .toList();
     }
 }
-

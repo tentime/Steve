@@ -1,13 +1,20 @@
+# AI API Configuration
+[ai]
+    # AI provider to use: 'groq' (FASTEST, FREE), 'openai', or 'gemini'
+    provider = "groq"
+
+# API Key Configuration
+# NOTE: Currently all providers read from this single key field.
+# Put your Groq/Gemini/OpenAI key here depending on which provider you chose above.
 [openai]
-    # Your OpenAI API key
-    # Get your API key from: https://platform.openai.com/api-keys
-    apiKey = "your-openai-api-key-here"
+    # Your API key (required)
+    apiKey = "your-api-key-here"
     
-    # Using GPT-3.5-turbo (much cheaper than GPT-4 for testing)
-    model = "gpt-3.5-turbo"
+    # Model to use (only applies to OpenAI provider)
+    model = "gpt-4-turbo-preview"
     
     # Maximum tokens per API request
-    maxTokens = 1000
+    maxTokens = 8000
     
     # Temperature (0.0-2.0, lower is more deterministic)
     temperature = 0.7
@@ -21,4 +28,3 @@
     
     # Maximum number of Steves that can be active simultaneously
     maxActiveSteves = 10
-
