@@ -2,6 +2,7 @@ package com.steve.ai.llm;
 
 import com.steve.ai.entity.SteveEntity;
 import com.steve.ai.memory.WorldKnowledge;
+import net.minecraft.core.BlockPos;
 
 import java.util.List;
 
