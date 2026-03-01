@@ -34,11 +34,13 @@ public class GatherResourceAction extends BaseAction {
     // -----------------------------------------------------------------------
     // Constants
     // -----------------------------------------------------------------------
-    private static final int SEARCH_RADIUS = 32;       // Surface needs wider area than tunneling
-    private static final int MAX_TICKS = 6000;          // 5-minute timeout (6000 ticks)
-    private static final int MINING_DELAY = 8;          // Ticks between break attempts
-    private static final int REACH_DISTANCE = 5;        // Blocks: must be within this range to break
-    private static final int NAVIGATION_TIMEOUT = 100;  // Ticks before we retry pathfinding
+    private static final int SEARCH_RADIUS = 24;        // Blocks around Steve to search
+    private static final int SEARCH_HEIGHT_UP = 30;      // Search up to 30 blocks above Steve
+    private static final int SEARCH_HEIGHT_DOWN = 10;    // Search up to 10 blocks below Steve
+    private static final int MAX_TICKS = 6000;           // 5-minute timeout (6000 ticks)
+    private static final int MINING_DELAY = 8;           // Ticks between break attempts
+    private static final int REACH_DISTANCE = 5;         // Blocks: must be within this range to break
+    private static final int NAVIGATION_TIMEOUT = 100;   // Ticks before we retry pathfinding
 
     // -----------------------------------------------------------------------
     // State
@@ -384,33 +386,43 @@ public class GatherResourceAction extends BaseAction {
     // -----------------------------------------------------------------------
 
     /**
-     * Scan the world surface for the nearest matching block within SEARCH_RADIUS.
-     * Searches from sky down to ground level (Y:256 → -64) to stay near-surface.
+     * Scan nearby blocks for the nearest matching block.
+     * Uses a bounded Y range around Steve's position to avoid scanning entire columns.
      */
     private void findBlockTarget() {
         Block target = resolveBlock(resourceName);
         if (target == null || target == Blocks.AIR) {
-            SteveMod.LOGGER.warn("Steve '{}' cannot resolve block for resource '{}'",
+            SteveMod.LOGGER.warn("Steve '{}' cannot resolve block for resource '{}' (got null or AIR)",
                 steve.getSteveName(), resourceName);
             return;
+        }
+
+        // Log the target block identity on first search for debugging
+        if (ticksRunning <= 1) {
+            SteveMod.LOGGER.info("Steve '{}' searching for block: {} (registry: {})",
+                steve.getSteveName(), resourceName,
+                net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(target));
         }
 
         BlockPos stevePos = steve.blockPosition();
         BlockPos nearest = null;
         double nearestDist = Double.MAX_VALUE;
 
-        for (int x = -SEARCH_RADIUS; x <= SEARCH_RADIUS; x++) {
-            for (int z = -SEARCH_RADIUS; z <= SEARCH_RADIUS; z++) {
-                // Search full column — surface blocks may be at many Y-levels
-                for (int y = 256; y >= -64; y--) {
+        int minY = stevePos.getY() - SEARCH_HEIGHT_DOWN;
+        int maxY = stevePos.getY() + SEARCH_HEIGHT_UP;
+
+        for (int x = -SEARCH_RADIUS; x <= SEARCH_RADIUS; x += 1) {
+            for (int z = -SEARCH_RADIUS; z <= SEARCH_RADIUS; z += 1) {
+                for (int y = maxY; y >= minY; y--) {
                     BlockPos checkPos = new BlockPos(stevePos.getX() + x, y, stevePos.getZ() + z);
-                    if (steve.level().getBlockState(checkPos).getBlock() == target) {
+                    Block found = steve.level().getBlockState(checkPos).getBlock();
+                    if (found == target) {
                         double dist = stevePos.distSqr(checkPos);
                         if (dist < nearestDist) {
                             nearestDist = dist;
                             nearest = checkPos;
                         }
-                        break; // Found the topmost instance in this column — move on
+                        break; // Found in this column, move on
                     }
                 }
             }
@@ -420,6 +432,12 @@ public class GatherResourceAction extends BaseAction {
             targetBlock = nearest;
             SteveMod.LOGGER.info("Steve '{}' found {} at {} ({}m away)",
                 steve.getSteveName(), resourceName, nearest, (int) Math.sqrt(nearestDist));
+        } else if (ticksRunning <= 1) {
+            // Extra debug on first search failure
+            SteveMod.LOGGER.warn("Steve '{}' found NO '{}' blocks in {}x{}x{} area around {}",
+                steve.getSteveName(), resourceName,
+                SEARCH_RADIUS * 2, SEARCH_HEIGHT_UP + SEARCH_HEIGHT_DOWN, SEARCH_RADIUS * 2,
+                stevePos);
         }
     }
 
