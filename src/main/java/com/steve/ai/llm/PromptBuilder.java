@@ -64,7 +64,7 @@ public class PromptBuilder {
             
             WOOD / LOGS (trees — always GATHER, never mine):
               oak_log, birch_log, spruce_log, jungle_log, acacia_log, dark_oak_log, cherry_log, mangrove_log
-              NOTE: "wood", "log", "tree", "chop" → gather wood (resolves to nearest log type)
+              NOTE: "wood", "log", "tree", "chop" \u2192 gather wood (resolves to nearest log type)
               NOTE: planks are CRAFTED from logs — never gather/mine "planks"
             
             PLANTS (farms, wild growth — always GATHER):
@@ -83,12 +83,12 @@ public class PromptBuilder {
             
             SURFACE STONE (shallow, not deep ore — GATHER or shallow mine):
               stone, cobblestone, andesite, diorite, granite, sandstone, red_sandstone, terracotta
-              NOTE: "get stone" / "mine stone" → gather stone (surface, Y:0-60)
+              NOTE: "get stone" / "mine stone" \u2192 gather stone (surface, Y:0-60)
             
             ANIMALS (kill for drops — GATHER, find entity and attack):
-              leather → cow, wool → sheep, feather → chicken, porkchop → pig,
-              beef → cow, mutton → sheep, chicken → chicken, rabbit
-              NOTE: "get food" / "food" → gather beef or chicken (kill nearest animal)
+              leather \u2192 cow, wool \u2192 sheep, feather \u2192 chicken, porkchop \u2192 pig,
+              beef \u2192 cow, mutton \u2192 sheep, chicken \u2192 chicken, rabbit
+              NOTE: "get food" / "food" \u2192 gather beef or chicken (kill nearest animal)
             
             WATER ITEMS (GATHER):
               cod, salmon, tropical_fish, pufferfish, seagrass, sea_pickle
@@ -114,34 +114,34 @@ public class PromptBuilder {
             ============================================================
             SPECIAL CASE RULES (memorize these)
             ============================================================
-            1. "get wood" / "chop trees" / "collect wood" / "deforest" → gather, resource=wood
-            2. "get sand" / "mine sand" / "dig sand"                   → gather, resource=sand (it's on the surface)
-            3. "get stone" / "mine stone"                              → gather, resource=stone (surface, not deep)
-            4. "get food" / "food" / "get something to eat"            → gather, resource=beef
-            5. "explore" / "look around"                               → pathfind
-            6. "clear trees" / "cut down trees"                        → gather, resource=wood
-            7. "get flowers" / "pick flowers"                          → gather, resource=dandelion
-            8. "get dirt" / "dig dirt"                                 → gather, resource=dirt
+            1. "get wood" / "chop trees" / "collect wood" / "deforest" \u2192 gather, resource=wood
+            2. "get sand" / "mine sand" / "dig sand"                   \u2192 gather, resource=sand (it's on the surface)
+            3. "get stone" / "mine stone"                              \u2192 gather, resource=stone (surface, not deep)
+            4. "get food" / "food" / "get something to eat"            \u2192 gather, resource=beef
+            5. "explore" / "look around"                               \u2192 pathfind
+            6. "clear trees" / "cut down trees"                        \u2192 gather, resource=wood
+            7. "get flowers" / "pick flowers"                          \u2192 gather, resource=dandelion
+            8. "get dirt" / "dig dirt"                                 \u2192 gather, resource=dirt
             
             ============================================================
             MOVEMENT & SOCIAL COMMANDS
             ============================================================
             
-            "come here" / "come to me" / "get over here"    → follow (player = nearest player)
-            "go to X Y Z" / "go to coordinates"              → pathfind (x, y, z)
-            "explore" / "look around" / "scout"               → pathfind (random nearby location ~50 blocks away)
-            "stop" / "stay" / "wait" / "hold" / "cancel"     → stop (empty tasks)
-            "follow me" / "tag along" / "come with me"       → follow (player = nearest player)
-            "go over there" (with no coords)                  → pathfind (random direction ~30 blocks away)
+            "come here" / "come to me" / "get over here"    \u2192 follow (player = nearest player)
+            "go to X Y Z" / "go to coordinates"              \u2192 pathfind (x, y, z)
+            "explore" / "look around" / "scout"               \u2192 pathfind (random nearby location ~50 blocks away)
+            "stop" / "stay" / "wait" / "hold" / "cancel"     \u2192 stop (empty tasks)
+            "follow me" / "tag along" / "come with me"       \u2192 follow (player = nearest player)
+            "go over there" (with no coords)                  \u2192 pathfind (random direction ~30 blocks away)
             
             ============================================================
             HOME BASE COMMANDS
             ============================================================
             
-            "set home" / "this is home" / "home base here"    → set_home (marks current position)
-            "go home" / "return home" / "come home"           → return_home (walks home + deposits into chests)
-            "drop off items" / "deposit" / "store items"      → return_home
-            "bring it home" / "put stuff away"                → return_home
+            "set home" / "this is home" / "home base here"    \u2192 set_home (marks current position)
+            "go home" / "return home" / "come home"           \u2192 return_home (walks home + deposits into chests)
+            "drop off items" / "deposit" / "store items"      \u2192 return_home
+            "bring it home" / "put stuff away"                \u2192 return_home
             NOTE: Steve automatically picks up items near him. After gathering or mining,
                   tell him to "go home" and he'll walk back and deposit into chests near home.
             
@@ -149,11 +149,11 @@ public class PromptBuilder {
             COMBAT & DEFENSE COMMANDS
             ============================================================
             
-            "attack" / "fight" / "kill mobs"                  → attack, target=hostile
-            "attack that zombie" / "kill the creeper"         → attack, target=<specific mob>
-            "protect me" / "guard me" / "defend me"           → attack, target=hostile (guard mode — keeps following + fighting)
-            "kill everything" / "clear all mobs"              → attack, target=hostile
-            "attack that pig" / "kill the cow"                → attack, target=<specific animal name>
+            "attack" / "fight" / "kill mobs"                  \u2192 attack, target=hostile
+            "attack that zombie" / "kill the creeper"         \u2192 attack, target=<specific mob>
+            "protect me" / "guard me" / "defend me"           \u2192 attack, target=hostile (guard mode — keeps following + fighting)
+            "kill everything" / "clear all mobs"              \u2192 attack, target=hostile
+            "attack that pig" / "kill the cow"                \u2192 attack, target=<specific animal name>
             
             Common mob names for target:
               hostile = any hostile mob (zombie, skeleton, creeper, spider, enderman, etc.)
