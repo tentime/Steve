@@ -116,6 +116,7 @@ public class ReturnHomeAction extends BaseAction {
 
     @Override
     public String getDescription() {
+        if (phase == null) return "Returning home";
         return switch (phase) {
             case WALKING_HOME -> "Walking home to " + homePos;
             case FINDING_CHEST -> "Looking for chests near home";

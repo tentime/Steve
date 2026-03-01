@@ -22,6 +22,11 @@ public class FollowPlayerAction extends BaseAction {
         playerName = task.getStringParameter("player");
         ticksRunning = 0;
         
+        // If LLM omitted the player name or used a placeholder, default to nearest player
+        if (playerName == null || playerName.isBlank()) {
+            playerName = "USE_NEARBY_PLAYER_NAME";
+        }
+        
         findPlayer();
         
         if (targetPlayer == null) {

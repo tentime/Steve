@@ -64,7 +64,7 @@ public class PromptBuilder {
             
             WOOD / LOGS (trees — always GATHER, never mine):
               oak_log, birch_log, spruce_log, jungle_log, acacia_log, dark_oak_log, cherry_log, mangrove_log
-              NOTE: "wood", "log", "tree", "chop" → gather oak_log
+              NOTE: "wood", "log", "tree", "chop" → gather wood (resolves to nearest log type)
               NOTE: planks are CRAFTED from logs — never gather/mine "planks"
             
             PLANTS (farms, wild growth — always GATHER):
@@ -114,12 +114,12 @@ public class PromptBuilder {
             ============================================================
             SPECIAL CASE RULES (memorize these)
             ============================================================
-            1. "get wood" / "chop trees" / "collect wood" / "deforest" → gather, resource=oak_log
+            1. "get wood" / "chop trees" / "collect wood" / "deforest" → gather, resource=wood
             2. "get sand" / "mine sand" / "dig sand"                   → gather, resource=sand (it's on the surface)
             3. "get stone" / "mine stone"                              → gather, resource=stone (surface, not deep)
             4. "get food" / "food" / "get something to eat"            → gather, resource=beef
             5. "explore" / "look around"                               → pathfind
-            6. "clear trees" / "cut down trees"                        → gather, resource=oak_log
+            6. "clear trees" / "cut down trees"                        → gather, resource=wood
             7. "get flowers" / "pick flowers"                          → gather, resource=dandelion
             8. "get dirt" / "dig dirt"                                 → gather, resource=dirt
             
@@ -187,10 +187,10 @@ public class PromptBuilder {
             {"reasoning": "Tunneling deep for diamond ore", "plan": "Mine diamonds at Y=-59", "tasks": [{"action": "mine", "parameters": {"block": "diamond_ore", "quantity": 8}}]}
             
             Input: "get wood"
-            {"reasoning": "Chopping surface trees for logs", "plan": "Gather oak logs from trees", "tasks": [{"action": "gather", "parameters": {"resource": "oak_log", "quantity": 16}}]}
+            {"reasoning": "Chopping surface trees for logs", "plan": "Gather wood from trees", "tasks": [{"action": "gather", "parameters": {"resource": "wood", "quantity": 16}}]}
             
             Input: "chop some trees"
-            {"reasoning": "Cutting down trees for wood", "plan": "Gather oak logs", "tasks": [{"action": "gather", "parameters": {"resource": "oak_log", "quantity": 16}}]}
+            {"reasoning": "Cutting down trees for wood", "plan": "Gather wood", "tasks": [{"action": "gather", "parameters": {"resource": "wood", "quantity": 16}}]}
             
             Input: "get sand"
             {"reasoning": "Collecting sand from surface near water", "plan": "Gather sand", "tasks": [{"action": "gather", "parameters": {"resource": "sand", "quantity": 32}}]}
@@ -198,121 +198,37 @@ public class PromptBuilder {
             Input: "mine sand"
             {"reasoning": "Sand is on the surface, using gather", "plan": "Gather sand from surface", "tasks": [{"action": "gather", "parameters": {"resource": "sand", "quantity": 32}}]}
             
-            Input: "get some stone"
-            {"reasoning": "Collecting stone from surface", "plan": "Gather stone", "tasks": [{"action": "gather", "parameters": {"resource": "stone", "quantity": 32}}]}
-            
-            Input: "get food"
-            {"reasoning": "Finding animals to kill for food", "plan": "Gather food by hunting", "tasks": [{"action": "gather", "parameters": {"resource": "beef", "quantity": 8}}]}
-            
-            Input: "get coal"
-            {"reasoning": "Mining coal ore underground", "plan": "Mine coal ore", "tasks": [{"action": "mine", "parameters": {"block": "coal_ore", "quantity": 16}}]}
-            
-            Input: "kill mobs"
-            {"reasoning": "Hunting hostile creatures", "plan": "Attack hostiles", "tasks": [{"action": "attack", "parameters": {"target": "hostile"}}]}
-            
-            Input: "murder creeper"
-            {"reasoning": "Targeting creeper", "plan": "Attack creeper", "tasks": [{"action": "attack", "parameters": {"target": "creeper"}}]}
-            
             Input: "follow me"
-            {"reasoning": "Player needs me nearby", "plan": "Follow player", "tasks": [{"action": "follow", "parameters": {"player": "USE_NEARBY_PLAYER_NAME"}}]}
-            
-            Input: "get birch wood"
-            {"reasoning": "Gathering birch logs from surface trees", "plan": "Gather birch logs", "tasks": [{"action": "gather", "parameters": {"resource": "birch_log", "quantity": 16}}]}
-            
-            Input: "collect flowers"
-            {"reasoning": "Picking flowers from the surface", "plan": "Gather flowers", "tasks": [{"action": "gather", "parameters": {"resource": "dandelion", "quantity": 8}}]}
-            
-            Input: "deforest the area"
-            {"reasoning": "Clearing trees by gathering all logs", "plan": "Gather oak logs", "tasks": [{"action": "gather", "parameters": {"resource": "oak_log", "quantity": 64}}]}
+            {"reasoning": "Following nearest player", "plan": "Follow player", "tasks": [{"action": "follow", "parameters": {"player": "USE_NEARBY_PLAYER_NAME"}}]}
             
             Input: "come here"
-            {"reasoning": "Player wants me nearby", "plan": "Go to player", "tasks": [{"action": "follow", "parameters": {"player": "USE_NEARBY_PLAYER_NAME"}}]}
-            
-            Input: "get over here"
-            {"reasoning": "Moving to player's location", "plan": "Follow player", "tasks": [{"action": "follow", "parameters": {"player": "USE_NEARBY_PLAYER_NAME"}}]}
+            {"reasoning": "Moving to nearest player", "plan": "Follow player", "tasks": [{"action": "follow", "parameters": {"player": "USE_NEARBY_PLAYER_NAME"}}]}
             
             Input: "stop"
-            {"reasoning": "Player wants me to stop", "plan": "Stop all actions", "tasks": [{"action": "stop", "parameters": {}}]}
-            
-            Input: "stay here"
-            {"reasoning": "Player wants me to stay put", "plan": "Stop and wait", "tasks": [{"action": "stop", "parameters": {}}]}
-            
-            Input: "wait"
-            {"reasoning": "Player wants me to hold position", "plan": "Stop and wait", "tasks": [{"action": "stop", "parameters": {}}]}
-            
-            Input: "explore"
-            {"reasoning": "Exploring the area", "plan": "Scout nearby area", "tasks": [{"action": "pathfind", "parameters": {"x": 100, "y": 64, "z": 100}}]}
-            
-            Input: "go to 100 64 200"
-            {"reasoning": "Navigating to coordinates", "plan": "Walk to location", "tasks": [{"action": "pathfind", "parameters": {"x": 100, "y": 64, "z": 200}}]}
-            
-            Input: "protect me"
-            {"reasoning": "Guarding player from hostiles", "plan": "Defend player", "tasks": [{"action": "attack", "parameters": {"target": "hostile"}}]}
-            
-            Input: "kill that zombie"
-            {"reasoning": "Targeting specific zombie", "plan": "Attack zombie", "tasks": [{"action": "attack", "parameters": {"target": "zombie"}}]}
-            
-            Input: "attack the enderman"
-            {"reasoning": "Targeting enderman", "plan": "Attack enderman", "tasks": [{"action": "attack", "parameters": {"target": "enderman"}}]}
-            
-            Input: "clear all mobs"
-            {"reasoning": "Killing all hostile mobs nearby", "plan": "Attack all hostiles", "tasks": [{"action": "attack", "parameters": {"target": "hostile"}}]}
-            
-            Input: "set home"
-            {"reasoning": "Marking this spot as home base", "plan": "Set home position", "tasks": [{"action": "set_home", "parameters": {}}]}
-            
-            Input: "this is home"
-            {"reasoning": "Player wants this as home base", "plan": "Set home position", "tasks": [{"action": "set_home", "parameters": {}}]}
+            {"reasoning": "Stopping all tasks", "plan": "Stop", "tasks": [{"action": "stop", "parameters": {}}]}
             
             Input: "go home"
-            {"reasoning": "Returning to home base", "plan": "Return home and deposit items", "tasks": [{"action": "return_home", "parameters": {}}]}
+            {"reasoning": "Returning home to deposit items", "plan": "Return home", "tasks": [{"action": "return_home", "parameters": {}}]}
             
-            Input: "drop off items"
-            {"reasoning": "Depositing items at home", "plan": "Return home and deposit", "tasks": [{"action": "return_home", "parameters": {}}]}
-            
-            Input: "store everything"
-            {"reasoning": "Going home to deposit inventory", "plan": "Return home and store", "tasks": [{"action": "return_home", "parameters": {}}]}
-            
-            Input: "get wood then go home"
-            {"reasoning": "Gather wood then deposit at base", "plan": "Gather logs then return home", "tasks": [{"action": "gather", "parameters": {"resource": "oak_log", "quantity": 16}}, {"action": "return_home", "parameters": {}}]}
-            
-            Input: "get obsidian"
-            {"reasoning": "Obsidian requires deep mining near lava", "plan": "Mine obsidian", "tasks": [{"action": "mine", "parameters": {"block": "obsidian", "quantity": 8}}]}
-            
-            CRITICAL: Output ONLY valid JSON. No markdown, no explanations, no line breaks in JSON.
+            Input: "come home"
+            {"reasoning": "Returning home to deposit items", "plan": "Return home", "tasks": [{"action": "return_home", "parameters": {}}]}
             """;
     }
-
-    public static String buildUserPrompt(SteveEntity steve, String command, WorldKnowledge worldKnowledge) {
-        StringBuilder prompt = new StringBuilder();
+    
+    public static String buildUserPrompt(SteveEntity steve, String command) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Steve '" + steve.getSteveName() + "' received command: \"" + command + "\"\n");
+        sb.append("Steve's current position: " + steve.blockPosition() + "\n");
         
-        // Give agents FULL situational awareness
-        prompt.append("=== YOUR SITUATION ===\n");
-        prompt.append("Position: ").append(formatPosition(steve.blockPosition())).append("\n");
-        prompt.append("Nearby Players: ").append(worldKnowledge.getNearbyPlayerNames()).append("\n");
-        prompt.append("Nearby Entities: ").append(worldKnowledge.getNearbyEntitiesSummary()).append("\n");
-        prompt.append("Nearby Blocks: ").append(worldKnowledge.getNearbyBlocksSummary()).append("\n");
-        prompt.append("Biome: ").append(worldKnowledge.getBiomeName()).append("\n");
-        prompt.append("Inventory: ").append(steve.getInventorySummary()).append("\n");
-        
-        // Home base info
-        if (steve.getMemory().hasHome()) {
-            net.minecraft.core.BlockPos home = steve.getMemory().getHomePosition();
-            prompt.append("Home Base: [").append(home.getX()).append(", ")
-                  .append(home.getY()).append(", ").append(home.getZ()).append("]\n");
-        } else {
-            prompt.append("Home Base: not set\n");
+        // Add world knowledge context
+        WorldKnowledge worldKnowledge = steve.getWorldKnowledge();
+        if (worldKnowledge != null) {
+            List<BlockPos> knownResources = worldKnowledge.getKnownResourcePositions();
+            if (!knownResources.isEmpty()) {
+                sb.append("Known resource positions: " + knownResources.subList(0, Math.min(5, knownResources.size())) + "\n");
+            }
         }
         
-        prompt.append("\n=== PLAYER COMMAND ===\n");
-        prompt.append("\"").append(command).append("\"\n");
-        
-        prompt.append("\n=== YOUR RESPONSE (with reasoning) ===\n");
-        
-        return prompt.toString();
-    }
-
-    private static String formatPosition(BlockPos pos) {
-        return String.format("[%d, %d, %d]", pos.getX(), pos.getY(), pos.getZ());
+        return sb.toString();
     }
 }

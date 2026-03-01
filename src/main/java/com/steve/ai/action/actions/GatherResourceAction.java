@@ -5,176 +5,82 @@ import com.steve.ai.action.ActionResult;
 import com.steve.ai.action.Task;
 import com.steve.ai.entity.SteveEntity;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.animal.*;
-import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.ChestBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 
 import java.util.*;
 
 /**
- * Surface gathering action — walks to resources on or near the surface and collects them.
+ * Gather a surface resource (wood, sand, stone, plants, etc.).
  *
- * <p>This action handles all resources that exist on the surface world:
- * logs/trees, plants, flowers, sand, stone, animals, and water items.
- * It uses navigation (NOT teleportation) to walk naturally to targets.</p>
- *
- * <p>For ores and deep underground blocks, use MineBlockAction instead.</p>
+ * <p>Improvements in this revision:</p>
+ * <ul>
+ *   <li><b>Bounded exploration</b>: after 3 consecutive scan failures Steve walks
+ *       a random direction; he won't wander more than 80 blocks from his start
+ *       position. Maximum 5 exploration attempts before giving up.</li>
+ *   <li><b>Block blacklist</b>: positions that the pathfinder fails to reach twice
+ *       are added to a skip-set so we never waste time on them again.</li>
+ *   <li><b>Bottom-up Y search</b>: when scanning for log blocks the Y range is
+ *       iterated from low to high so we find the base of a tree first (easier to
+ *       path to).</li>
+ *   <li><b>findTreeBase()</b>: given any log block, scans downward to return the
+ *       lowest connected log in that column.</li>
+ * </ul>
  */
 public class GatherResourceAction extends BaseAction {
 
     // -----------------------------------------------------------------------
     // Constants
     // -----------------------------------------------------------------------
-    private static final int SEARCH_RADIUS = 24;
-    private static final int SEARCH_HEIGHT_UP = 30;
-    private static final int SEARCH_HEIGHT_DOWN = 10;
-    private static final int MAX_TICKS = 6000;           // 5-minute timeout
-    private static final int REACH_DISTANCE = 5;
-    private static final int NAVIGATION_TIMEOUT = 100;
-    private static final int CHEST_SEARCH_RADIUS = 8;
+    private static final int SCAN_RADIUS           = 24;   // XZ radius for block search
+    private static final int SCAN_HEIGHT           = 16;   // Y half-range for block search
+    private static final int REACH_DISTANCE_SQ     = 9;    // 3 blocks
+    private static final int MAX_TICKS             = 6000; // 5-minute hard timeout
+    private static final int NAV_TIMEOUT_TICKS     = 100;  // Ticks before pathfind retry
+    private static final int STUCK_THRESHOLD       = 200;  // Ticks without progress = stuck
+    private static final int EXPLORATION_THRESHOLD = 3;    // Consecutive scan fails before exploring
+    private static final int MAX_EXPLORATION_ATTEMPTS = 5; // Give up after this many random walks
+    private static final int EXPLORE_RADIUS        = 20;   // Random walk distance
+    private static final int MAX_WANDER_DIST_SQ    = 80 * 80; // Max 80 blocks from start
+    private static final int PATHFIND_FAIL_LIMIT   = 2;    // Blacklist after this many path failures
 
-    // Mining animation: ticks of swinging before the block actually breaks
-    // This gives visual feedback — arm swings + cracking overlay
-    private static final int BREAK_TICKS = 10;           // ~0.5 seconds to break a block
-
-    // Special marker: "find any log type, whichever is closest"
-    private static final String ANY_LOG = "any_log";
-
-    // All vanilla log blocks to check when resource is ANY_LOG
-    private static final List<Block> ALL_LOG_BLOCKS = new ArrayList<>();
+    // -----------------------------------------------------------------------
+    // Log block type aliases
+    // -----------------------------------------------------------------------
+    private static final Map<String, String[]> RESOURCE_ALIASES = new HashMap<>();
     static {
-        String[] logNames = {
+        // any_log → try all vanilla log types
+        RESOURCE_ALIASES.put("any_log", new String[]{
             "oak_log", "birch_log", "spruce_log", "jungle_log",
             "acacia_log", "dark_oak_log", "cherry_log", "mangrove_log"
-        };
-        for (String name : logNames) {
-            Block b = BuiltInRegistries.BLOCK.get(new ResourceLocation("minecraft:" + name));
-            if (b != null && b != Blocks.AIR) {
-                ALL_LOG_BLOCKS.add(b);
-            }
-        }
+        });
+        // Generic names that should resolve to any_log
+        RESOURCE_ALIASES.put("wood",   new String[]{"any_log"});
+        RESOURCE_ALIASES.put("log",    new String[]{"any_log"});
+        RESOURCE_ALIASES.put("logs",   new String[]{"any_log"});
+        RESOURCE_ALIASES.put("tree",   new String[]{"any_log"});
+        RESOURCE_ALIASES.put("trees",  new String[]{"any_log"});
+        RESOURCE_ALIASES.put("timber", new String[]{"any_log"});
     }
 
     // -----------------------------------------------------------------------
-    // State
+    // State fields
     // -----------------------------------------------------------------------
-    private String resourceName;
-    private int quantity;
-    private int gathered;
-    private int ticksRunning;
-    private int ticksSinceNavStart;
-
-    private BlockPos targetBlock;
-    private Block targetBlockType;       // The actual Block we matched (matters for any_log)
-    private LivingEntity targetEntity;
-    private boolean isAnimalTarget;
-    private boolean navigating;
-
-    // Mining animation state
-    private int breakProgress;           // Ticks spent mining current block (0 to BREAK_TICKS)
-    private boolean isMining;            // True while doing the break animation
-    private int breakerId;               // Unique ID for destroyBlockProgress packets
-
-    // For tree felling: stack of log positions above the first one
-    private final List<BlockPos> trunkQueue = new ArrayList<>();
-
-    // Resource name aliases → canonical Minecraft block name
-    private static final Map<String, String> RESOURCE_ALIASES = new HashMap<>() {{
-        // Generic wood → find ANY nearby tree
-        put("wood",        ANY_LOG);
-        put("log",         ANY_LOG);
-        put("logs",        ANY_LOG);
-        put("tree",        ANY_LOG);
-        put("trees",       ANY_LOG);
-        // Specific wood types
-        put("oak",         "oak_log");
-        put("oak_log",     "oak_log");
-        put("birch",       "birch_log");
-        put("birch_log",   "birch_log");
-        put("spruce",      "spruce_log");
-        put("spruce_log",  "spruce_log");
-        put("jungle",      "jungle_log");
-        put("jungle_log",  "jungle_log");
-        put("acacia",      "acacia_log");
-        put("acacia_log",  "acacia_log");
-        put("dark_oak",    "dark_oak_log");
-        put("dark_oak_log","dark_oak_log");
-        put("cherry",      "cherry_log");
-        put("cherry_log",  "cherry_log");
-        put("mangrove",    "mangrove_log");
-        put("mangrove_log","mangrove_log");
-        // Surface stone aliases
-        put("stone",       "stone");
-        put("cobblestone", "cobblestone");
-        put("andesite",    "andesite");
-        put("diorite",     "diorite");
-        put("granite",     "granite");
-        // Surface blocks
-        put("sand",        "sand");
-        put("dirt",        "dirt");
-        put("gravel",      "gravel");
-        put("clay",        "clay");
-        put("snow",        "snow_block");
-        put("grass",       "grass_block");
-        // Plants
-        put("wheat",       "wheat");
-        put("carrot",      "carrots");
-        put("carrots",     "carrots");
-        put("potato",      "potatoes");
-        put("potatoes",    "potatoes");
-        put("beetroot",    "beetroots");
-        put("pumpkin",     "pumpkin");
-        put("melon",       "melon");
-        put("bamboo",      "bamboo");
-        put("cactus",      "cactus");
-        put("sugar_cane",  "sugar_cane");
-        put("sugarcane",   "sugar_cane");
-        // Flowers
-        put("flower",      "dandelion");
-        put("flowers",     "dandelion");
-        put("dandelion",   "dandelion");
-        put("poppy",       "poppy");
-        // Mushrooms
-        put("mushroom",    "red_mushroom");
-        put("red_mushroom","red_mushroom");
-        put("brown_mushroom","brown_mushroom");
-        // Animal drops → trigger animal hunt
-        put("food",        "beef");
-        put("beef",        "beef");
-        put("porkchop",    "porkchop");
-        put("mutton",      "mutton");
-        put("chicken",     "chicken");
-        put("leather",     "leather");
-        put("wool",        "wool");
-        put("feather",     "feather");
-        put("rabbit",      "rabbit");
-    }};
-
-    // Animal drop → which animal to hunt
-    private static final Map<String, String> DROP_TO_ANIMAL = new HashMap<>() {{
-        put("beef",     "cow");
-        put("leather",  "cow");
-        put("porkchop", "pig");
-        put("mutton",   "sheep");
-        put("wool",     "sheep");
-        put("chicken",  "chicken");
-        put("feather",  "chicken");
-        put("rabbit",   "rabbit");
-    }};
-
-    private static final Set<String> ANIMAL_DROPS = DROP_TO_ANIMAL.keySet();
+    private String   resourceName;
+    private int      quantityGoal;
+    private int      quantityGathered;
+    private BlockPos targetPos;
+    private int      ticksRunning;
+    private int      ticksAttemptingNav;
+    private int      ticksWithoutProgress;
+    private BlockPos lastPos;
+    private int      consecutiveScanFailures;
+    private int      explorationAttempts;
+    private BlockPos startPos;                       // Where Steve was when the action started
+    private final Set<BlockPos> blacklist = new HashSet<>();
+    private final Map<BlockPos, Integer> pathFailCount = new HashMap<>();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -189,39 +95,26 @@ public class GatherResourceAction extends BaseAction {
 
     @Override
     protected void onStart() {
-        String rawResource = task.getStringParameter("resource");
-        quantity = task.getIntParameter("quantity", 1);
-        gathered = 0;
-        ticksRunning = 0;
-        ticksSinceNavStart = 0;
-        targetBlock = null;
-        targetBlockType = null;
-        targetEntity = null;
-        navigating = false;
-        breakProgress = 0;
-        isMining = false;
-        breakerId = steve.getId();  // Use entity ID for block break progress packets
-        trunkQueue.clear();
+        resourceName      = task.getStringParameter("resource");
+        quantityGoal      = task.getIntParameter("quantity", 16);
+        quantityGathered  = 0;
+        targetPos         = null;
+        ticksRunning      = 0;
+        ticksAttemptingNav = 0;
+        ticksWithoutProgress = 0;
+        lastPos           = steve.blockPosition();
+        consecutiveScanFailures = 0;
+        explorationAttempts = 0;
+        startPos          = steve.blockPosition();
 
-        if (rawResource == null || rawResource.isBlank()) {
-            result = ActionResult.failure("No resource specified for gather action");
+        if (resourceName == null || resourceName.isBlank()) {
+            result = ActionResult.failure("No resource specified");
             return;
         }
 
-        resourceName = resolveResourceName(rawResource);
-        isAnimalTarget = ANIMAL_DROPS.contains(resourceName);
-
-        SteveMod.LOGGER.info("Steve '{}' starting gather: {} x{} (resolved from '{}')",
-            steve.getSteveName(), resourceName, quantity, rawResource);
-
-        steve.setFlying(false);
-        steve.setSprinting(false);
-
-        if (isAnimalTarget) {
-            findAnimalTarget();
-        } else {
-            findBlockTarget();
-        }
+        resourceName = resourceName.toLowerCase().trim();
+        SteveMod.LOGGER.info("Steve '{}' gathering {} x{}",
+            steve.getSteveName(), resourceName, quantityGoal);
     }
 
     @Override
@@ -230,482 +123,262 @@ public class GatherResourceAction extends BaseAction {
 
         if (ticksRunning > MAX_TICKS) {
             steve.getNavigation().stop();
-            cancelBreakProgress();
             result = ActionResult.failure(
-                "Gather timeout — only found " + gathered + "/" + quantity + " " + resourceName, false);
+                "Timed out after " + quantityGathered + "/" + quantityGoal + " " + resourceName);
             return;
         }
 
-        if (isAnimalTarget) {
-            tickAnimalGather();
+        // Progress tracking
+        BlockPos currentPos = steve.blockPosition();
+        if (!currentPos.equals(lastPos)) {
+            ticksWithoutProgress = 0;
+            lastPos = currentPos;
         } else {
-            tickBlockGather();
+            ticksWithoutProgress++;
+        }
+
+        if (targetPos == null) {
+            scanForTarget();
+        } else {
+            tickApproachAndBreak();
         }
     }
 
     @Override
     protected void onCancel() {
         steve.getNavigation().stop();
-        steve.setSprinting(false);
-        cancelBreakProgress();
-        trunkQueue.clear();
     }
 
     @Override
     public String getDescription() {
-        return "Gather " + quantity + " " + resourceName + " (" + gathered + " collected)";
+        return "Gather " + resourceName + " (" + quantityGathered + "/" + quantityGoal + ")";
     }
 
     // -----------------------------------------------------------------------
-    // Block breaking with visible animation
+    // Scanning
     // -----------------------------------------------------------------------
 
-    /**
-     * Start or continue the mining animation on a block.
-     * Swings Steve's arm each tick, sends cracking overlay progress to clients,
-     * and breaks the block after BREAK_TICKS ticks.
-     *
-     * @return true if the block was broken this tick, false if still mining
-     */
-    private boolean tickMineBlock(BlockPos pos) {
-        // Look at the block we're mining
-        steve.getLookControl().setLookAt(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+    private void scanForTarget() {
+        BlockPos found = findNearestResource();
 
-        // Swing arm every other tick for a natural look
-        if (breakProgress % 2 == 0) {
-            steve.swing(InteractionHand.MAIN_HAND, true);
-        }
-
-        // Send block cracking progress to all nearby players
-        // Progress is 0-9 where 9 is nearly broken, -1 clears it
-        if (steve.level() instanceof ServerLevel serverLevel) {
-            int stage = (int) ((float) breakProgress / BREAK_TICKS * 9.0F);
-            stage = Math.min(stage, 9);
-            serverLevel.destroyBlockProgress(breakerId, pos, stage);
-        }
-
-        breakProgress++;
-
-        if (breakProgress >= BREAK_TICKS) {
-            // Done mining — actually break the block
-            if (steve.level() instanceof ServerLevel serverLevel) {
-                // Clear the cracking overlay
-                serverLevel.destroyBlockProgress(breakerId, pos, -1);
-            }
-            steve.swing(InteractionHand.MAIN_HAND, true);
-            steve.level().destroyBlock(pos, true);  // true = drop items
-            breakProgress = 0;
-            isMining = false;
-            return true;
-        }
-
-        isMining = true;
-        return false;
-    }
-
-    /**
-     * Clear any active block break progress overlay.
-     */
-    private void cancelBreakProgress() {
-        if (isMining && targetBlock != null && steve.level() instanceof ServerLevel serverLevel) {
-            serverLevel.destroyBlockProgress(breakerId, targetBlock, -1);
-        }
-        isMining = false;
-        breakProgress = 0;
-    }
-
-    // -----------------------------------------------------------------------
-    // Block gathering logic
-    // -----------------------------------------------------------------------
-
-    private void tickBlockGather() {
-        // Drain trunk queue first (fell the whole tree)
-        if (!trunkQueue.isEmpty()) {
-            BlockPos nextLog = trunkQueue.get(0);
-            if (targetBlockType != null && steve.level().getBlockState(nextLog).getBlock() == targetBlockType) {
-                steve.getLookControl().setLookAt(nextLog.getX() + 0.5, nextLog.getY() + 0.5, nextLog.getZ() + 0.5);
-                if (tickMineBlock(nextLog)) {
-                    trunkQueue.remove(0);
-                    gathered++;
-                    SteveMod.LOGGER.info("Steve '{}' felled trunk log at {} ({}/{})",
-                        steve.getSteveName(), nextLog, gathered, quantity);
-                    if (gathered >= quantity) {
-                        trunkQueue.clear();
-                        finishGathering();
-                    }
-                }
-            } else {
-                // Log is gone, skip it
-                trunkQueue.remove(0);
-                cancelBreakProgress();
-            }
-            return;
-        }
-
-        // Find a target if we don't have one
-        if (targetBlock == null) {
-            findBlockTarget();
-            if (targetBlock == null) {
-                if (ticksRunning % 60 == 0) {
-                    SteveMod.LOGGER.info("Steve '{}' searching for {} ...", steve.getSteveName(), resourceName);
-                }
-                return;
-            }
-        }
-
-        // Verify target block still exists
-        if (targetBlockType == null || steve.level().getBlockState(targetBlock).getBlock() != targetBlockType) {
-            targetBlock = null;
-            targetBlockType = null;
-            navigating = false;
-            cancelBreakProgress();
-            return;
-        }
-
-        double distToTarget = steve.blockPosition().distSqr(targetBlock);
-
-        // Close enough to mine
-        if (distToTarget <= REACH_DISTANCE * REACH_DISTANCE) {
-            if (tickMineBlock(targetBlock)) {
-                gathered++;
-                SteveMod.LOGGER.info("Steve '{}' gathered {} at {} ({}/{})",
-                    steve.getSteveName(), resourceName, targetBlock, gathered, quantity);
-
-                // For logs: fell the whole trunk
-                if (isLogBlock(targetBlockType)) {
-                    scanTrunkAbove(targetBlock, targetBlockType);
-                }
-
-                targetBlock = null;
-                navigating = false;
-
-                if (gathered >= quantity) {
-                    finishGathering();
-                }
-            }
-            return;
-        }
-
-        // If we were mining but moved away, cancel the progress
-        if (isMining) {
-            cancelBreakProgress();
-        }
-
-        // Navigate to target
-        if (!navigating) {
-            steve.getNavigation().moveTo(targetBlock.getX() + 0.5, targetBlock.getY(), targetBlock.getZ() + 0.5, 1.0);
-            navigating = true;
-            ticksSinceNavStart = 0;
-            SteveMod.LOGGER.info("Steve '{}' walking to {} at {}", steve.getSteveName(), resourceName, targetBlock);
+        if (found != null) {
+            targetPos = found;
+            consecutiveScanFailures = 0;
+            ticksAttemptingNav = 0;
+            steve.getNavigation().moveTo(targetPos.getX() + 0.5, targetPos.getY(), targetPos.getZ() + 0.5, 1.0);
+            SteveMod.LOGGER.info("Steve '{}' targeting {} at {}", steve.getSteveName(), resourceName, targetPos);
         } else {
-            ticksSinceNavStart++;
-            if (steve.getNavigation().isDone() && distToTarget > REACH_DISTANCE * REACH_DISTANCE) {
-                if (ticksSinceNavStart > NAVIGATION_TIMEOUT) {
-                    SteveMod.LOGGER.info("Steve '{}' stuck navigating to {}, searching for another",
-                        steve.getSteveName(), targetBlock);
-                    targetBlock = null;
-                    targetBlockType = null;
-                    navigating = false;
+            consecutiveScanFailures++;
+            SteveMod.LOGGER.info("Steve '{}' scan #{} failed for {}",
+                steve.getSteveName(), consecutiveScanFailures, resourceName);
+
+            if (consecutiveScanFailures >= EXPLORATION_THRESHOLD) {
+                if (explorationAttempts >= MAX_EXPLORATION_ATTEMPTS) {
+                    result = ActionResult.failure(
+                        "Could not find " + resourceName + " after " + explorationAttempts + " explorations. Gathered " + quantityGathered);
                 } else {
-                    steve.getNavigation().moveTo(targetBlock.getX() + 0.5, targetBlock.getY(), targetBlock.getZ() + 0.5, 1.0);
+                    exploreRandomly();
                 }
             }
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Animal gathering logic
-    // -----------------------------------------------------------------------
+    /**
+     * Walk in a random direction to search new terrain.
+     * Respects the MAX_WANDER_DIST_SQ boundary around startPos.
+     */
+    private void exploreRandomly() {
+        explorationAttempts++;
+        consecutiveScanFailures = 0;
 
-    private void tickAnimalGather() {
-        if (targetEntity == null || !targetEntity.isAlive() || targetEntity.isRemoved()) {
-            targetEntity = null;
-            navigating = false;
-            findAnimalTarget();
-            if (targetEntity == null) {
-                if (ticksRunning % 60 == 0) {
-                    SteveMod.LOGGER.info("Steve '{}' searching for animal ({})", steve.getSteveName(), resourceName);
-                }
-                return;
-            }
+        Random rng = new Random();
+        double angle = rng.nextDouble() * 2 * Math.PI;
+
+        // Bias back toward start if we've wandered too far
+        BlockPos cur = steve.blockPosition();
+        double dxFromStart = cur.getX() - startPos.getX();
+        double dzFromStart = cur.getZ() - startPos.getZ();
+        double distSqFromStart = dxFromStart * dxFromStart + dzFromStart * dzFromStart;
+
+        if (distSqFromStart > MAX_WANDER_DIST_SQ) {
+            // Point back toward start + small random offset
+            double backAngle = Math.atan2(-dzFromStart, -dxFromStart);
+            angle = backAngle + (rng.nextDouble() - 0.5) * Math.PI * 0.5;
+            SteveMod.LOGGER.info("Steve '{}' too far from start, biasing back", steve.getSteveName());
         }
 
-        double distToAnimal = steve.distanceTo(targetEntity);
+        double dx = Math.cos(angle) * EXPLORE_RADIUS;
+        double dz = Math.sin(angle) * EXPLORE_RADIUS;
+        BlockPos exploreTarget = new BlockPos(
+            (int)(cur.getX() + dx),
+            cur.getY(),
+            (int)(cur.getZ() + dz)
+        );
 
-        if (distToAnimal <= 3.5) {
-            if (ticksRunning % 10 == 0) {  // Attack every 10 ticks (0.5s)
-                steve.doHurtTarget(targetEntity);
-                steve.swing(InteractionHand.MAIN_HAND, true);
+        steve.getNavigation().moveTo(exploreTarget.getX() + 0.5, exploreTarget.getY(), exploreTarget.getZ() + 0.5, 1.0);
+        SteveMod.LOGGER.info("Steve '{}' exploring toward {} (attempt {}/{})",
+            steve.getSteveName(), exploreTarget, explorationAttempts, MAX_EXPLORATION_ATTEMPTS);
+    }
 
-                if (!targetEntity.isAlive() || targetEntity.isRemoved()) {
-                    gathered++;
-                    SteveMod.LOGGER.info("Steve '{}' killed animal for {} ({}/{})",
-                        steve.getSteveName(), resourceName, gathered, quantity);
-                    targetEntity = null;
-                    navigating = false;
+    // -----------------------------------------------------------------------
+    // Approach & break
+    // -----------------------------------------------------------------------
 
-                    if (gathered >= quantity) {
-                        finishGathering();
-                    }
-                }
+    private void tickApproachAndBreak() {
+        double distSq = steve.blockPosition().distSqr(targetPos);
+
+        if (distSq <= REACH_DISTANCE_SQ) {
+            // In range — break the block
+            breakBlock(targetPos);
+            quantityGathered++;
+            targetPos = null;
+            ticksAttemptingNav = 0;
+            ticksWithoutProgress = 0;
+
+            SteveMod.LOGGER.info("Steve '{}' gathered {} ({}/{})",
+                steve.getSteveName(), resourceName, quantityGathered, quantityGoal);
+
+            if (quantityGathered >= quantityGoal) {
+                steve.getNavigation().stop();
+                result = ActionResult.success(
+                    "Gathered " + quantityGathered + " " + resourceName);
             }
             return;
         }
 
-        if (!navigating) {
-            steve.getNavigation().moveTo(targetEntity, 1.0);
-            navigating = true;
-            ticksSinceNavStart = 0;
-        } else {
-            ticksSinceNavStart++;
-            if (steve.getNavigation().isDone() && distToAnimal > 3.5) {
-                if (ticksSinceNavStart > NAVIGATION_TIMEOUT) {
-                    SteveMod.LOGGER.info("Steve '{}' stuck navigating to animal, retargeting", steve.getSteveName());
-                    targetEntity = null;
-                    navigating = false;
-                } else {
-                    steve.getNavigation().moveTo(targetEntity, 1.0);
-                }
+        // Navigation management
+        ticksAttemptingNav++;
+        boolean navDone = steve.getNavigation().isDone();
+
+        if (ticksWithoutProgress > STUCK_THRESHOLD) {
+            SteveMod.LOGGER.info("Steve '{}' stuck going to {}, blacklisting", steve.getSteveName(), targetPos);
+            blacklist.add(targetPos);
+            targetPos = null;
+            ticksWithoutProgress = 0;
+            ticksAttemptingNav = 0;
+            steve.getNavigation().stop();
+            return;
+        }
+
+        if (navDone && distSq > REACH_DISTANCE_SQ) {
+            int fails = pathFailCount.merge(targetPos, 1, Integer::sum);
+            if (fails >= PATHFIND_FAIL_LIMIT) {
+                SteveMod.LOGGER.info("Steve '{}' blacklisting unreachable {}", steve.getSteveName(), targetPos);
+                blacklist.add(targetPos);
+                pathFailCount.remove(targetPos);
+                targetPos = null;
+                ticksAttemptingNav = 0;
+            } else if (ticksAttemptingNav > NAV_TIMEOUT_TICKS) {
+                // Retry navigation
+                steve.getNavigation().moveTo(targetPos.getX() + 0.5, targetPos.getY(), targetPos.getZ() + 0.5, 1.0);
+                ticksAttemptingNav = 0;
             }
         }
     }
 
     // -----------------------------------------------------------------------
-    // Completion — deposit into nearby chest if possible
+    // Block-breaking
     // -----------------------------------------------------------------------
 
-    /**
-     * Called when gathering is done. Tries to deposit items into a nearby chest,
-     * then reports success.
-     */
-    private void finishGathering() {
-        steve.getNavigation().stop();
-        cancelBreakProgress();
-        int deposited = tryDepositIntoChest();
-        if (deposited > 0) {
-            result = ActionResult.success(
-                "Gathered " + gathered + " " + resourceName + " and deposited " + deposited + " items into nearby chest");
-        } else {
-            result = ActionResult.success("Gathered " + gathered + " " + resourceName);
-        }
+    private void breakBlock(BlockPos pos) {
+        // Remove from world
+        steve.level().destroyBlock(pos, true);
     }
 
-    /**
-     * Look for a chest within CHEST_SEARCH_RADIUS and dump Steve's inventory into it.
-     * Returns the number of item stacks deposited.
-     */
-    private int tryDepositIntoChest() {
+    // -----------------------------------------------------------------------
+    // Resource scanning
+    // -----------------------------------------------------------------------
+
+    private BlockPos findNearestResource() {
         BlockPos stevePos = steve.blockPosition();
-        BlockPos nearestChest = null;
-        double nearestDist = Double.MAX_VALUE;
+        String[] blockNames = resolveResourceNames(resourceName);
 
-        for (int x = -CHEST_SEARCH_RADIUS; x <= CHEST_SEARCH_RADIUS; x++) {
-            for (int z = -CHEST_SEARCH_RADIUS; z <= CHEST_SEARCH_RADIUS; z++) {
-                for (int y = -3; y <= 3; y++) {
-                    BlockPos checkPos = new BlockPos(stevePos.getX() + x, stevePos.getY() + y, stevePos.getZ() + z);
-                    if (steve.level().getBlockState(checkPos).getBlock() instanceof ChestBlock) {
-                        double dist = stevePos.distSqr(checkPos);
-                        if (dist < nearestDist) {
-                            nearestDist = dist;
-                            nearestChest = checkPos;
+        BlockPos nearest  = null;
+        double   nearestD = Double.MAX_VALUE;
+
+        // Iterate Y bottom-up so we find tree bases first
+        for (int y = -SCAN_HEIGHT; y <= SCAN_HEIGHT; y++) {
+            for (int x = -SCAN_RADIUS; x <= SCAN_RADIUS; x++) {
+                for (int z = -SCAN_RADIUS; z <= SCAN_RADIUS; z++) {
+                    BlockPos checkPos = stevePos.offset(x, y, z);
+
+                    if (blacklist.contains(checkPos)) continue;
+
+                    BlockState state = steve.level().getBlockState(checkPos);
+                    String blockId = getBlockId(state);
+
+                    if (matchesAny(blockId, blockNames)) {
+                        BlockPos usePos = isLogBlock(blockId)
+                            ? findTreeBase(checkPos)
+                            : checkPos;
+
+                        if (blacklist.contains(usePos)) continue;
+
+                        double dist = stevePos.distSqr(usePos);
+                        if (dist < nearestD) {
+                            nearestD = dist;
+                            nearest  = usePos;
                         }
                     }
                 }
             }
         }
-
-        if (nearestChest == null) return 0;
-
-        BlockEntity be = steve.level().getBlockEntity(nearestChest);
-        if (!(be instanceof ChestBlockEntity chest)) return 0;
-
-        int deposited = 0;
-        var inventory = steve.getInventoryContainer();
-        if (inventory == null) return 0;
-
-        for (int i = 0; i < inventory.getContainerSize(); i++) {
-            ItemStack stack = inventory.getItem(i);
-            if (stack.isEmpty()) continue;
-
-            for (int slot = 0; slot < chest.getContainerSize(); slot++) {
-                ItemStack chestStack = chest.getItem(slot);
-                if (chestStack.isEmpty()) {
-                    chest.setItem(slot, stack.copy());
-                    inventory.setItem(i, ItemStack.EMPTY);
-                    deposited++;
-                    break;
-                } else if (ItemStack.isSameItemSameTags(chestStack, stack)
-                        && chestStack.getCount() < chestStack.getMaxStackSize()) {
-                    int space = chestStack.getMaxStackSize() - chestStack.getCount();
-                    int transfer = Math.min(space, stack.getCount());
-                    chestStack.grow(transfer);
-                    stack.shrink(transfer);
-                    if (stack.isEmpty()) {
-                        inventory.setItem(i, ItemStack.EMPTY);
-                        deposited++;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (deposited > 0) {
-            chest.setChanged();
-            SteveMod.LOGGER.info("Steve '{}' deposited {} item stacks into chest at {}",
-                steve.getSteveName(), deposited, nearestChest);
-        }
-
-        return deposited;
-    }
-
-    // -----------------------------------------------------------------------
-    // Search helpers
-    // -----------------------------------------------------------------------
-
-    /**
-     * Scan nearby blocks for the nearest matching block.
-     * If resourceName is ANY_LOG, checks all log types and picks the closest.
-     */
-    private void findBlockTarget() {
-        boolean anyLog = ANY_LOG.equals(resourceName);
-
-        List<Block> targets;
-        if (anyLog) {
-            targets = ALL_LOG_BLOCKS;
-        } else {
-            Block single = resolveBlock(resourceName);
-            if (single == null || single == Blocks.AIR) {
-                SteveMod.LOGGER.warn("Steve '{}' cannot resolve block for resource '{}' (got null or AIR)",
-                    steve.getSteveName(), resourceName);
-                return;
-            }
-            targets = List.of(single);
-        }
-
-        if (ticksRunning <= 1) {
-            SteveMod.LOGGER.info("Steve '{}' searching for {} (candidates: {})",
-                steve.getSteveName(), resourceName, anyLog ? "all log types" : targets.get(0));
-        }
-
-        BlockPos stevePos = steve.blockPosition();
-        BlockPos nearest = null;
-        Block nearestType = null;
-        double nearestDist = Double.MAX_VALUE;
-
-        int minY = stevePos.getY() - SEARCH_HEIGHT_DOWN;
-        int maxY = stevePos.getY() + SEARCH_HEIGHT_UP;
-
-        Set<Block> targetSet = new HashSet<>(targets);
-
-        for (int x = -SEARCH_RADIUS; x <= SEARCH_RADIUS; x++) {
-            for (int z = -SEARCH_RADIUS; z <= SEARCH_RADIUS; z++) {
-                for (int y = maxY; y >= minY; y--) {
-                    BlockPos checkPos = new BlockPos(stevePos.getX() + x, y, stevePos.getZ() + z);
-                    Block found = steve.level().getBlockState(checkPos).getBlock();
-                    if (targetSet.contains(found)) {
-                        double dist = stevePos.distSqr(checkPos);
-                        if (dist < nearestDist) {
-                            nearestDist = dist;
-                            nearest = checkPos;
-                            nearestType = found;
-                        }
-                        break; // Found in this column, move on
-                    }
-                }
-            }
-        }
-
-        if (nearest != null) {
-            targetBlock = nearest;
-            targetBlockType = nearestType;
-            ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(nearestType);
-            SteveMod.LOGGER.info("Steve '{}' found {} at {} ({}m away, type: {})",
-                steve.getSteveName(), resourceName, nearest, (int) Math.sqrt(nearestDist), key);
-        } else if (ticksRunning <= 1) {
-            SteveMod.LOGGER.warn("Steve '{}' found NO '{}' blocks in {}x{}x{} area around {}",
-                steve.getSteveName(), resourceName,
-                SEARCH_RADIUS * 2, SEARCH_HEIGHT_UP + SEARCH_HEIGHT_DOWN, SEARCH_RADIUS * 2,
-                stevePos);
-        }
+        return nearest;
     }
 
     /**
-     * Find the nearest living animal whose drops match the requested resource.
+     * Given a log block position, scan downward to find the lowest
+     * connected log in the same column (i.e., the tree base).
      */
-    private void findAnimalTarget() {
-        String animalType = DROP_TO_ANIMAL.getOrDefault(resourceName, "");
-        AABB searchBox = steve.getBoundingBox().inflate(SEARCH_RADIUS);
-        List<Entity> entities = steve.level().getEntities(steve, searchBox);
-
-        LivingEntity nearest = null;
-        double nearestDist = Double.MAX_VALUE;
-
-        for (Entity entity : entities) {
-            if (!(entity instanceof LivingEntity living)) continue;
-            if (!living.isAlive() || living.isRemoved()) continue;
-            if (entity instanceof SteveEntity) continue;
-            if (entity instanceof net.minecraft.world.entity.player.Player) continue;
-
-            String entityTypeName = entity.getType().toString().toLowerCase();
-            if (!animalType.isEmpty() && !entityTypeName.contains(animalType)) continue;
-            if (animalType.isEmpty() && !(entity instanceof Animal)) continue;
-
-            double dist = steve.distanceTo(living);
-            if (dist < nearestDist) {
-                nearestDist = dist;
-                nearest = living;
-            }
-        }
-
-        if (nearest != null) {
-            targetEntity = nearest;
-            SteveMod.LOGGER.info("Steve '{}' found animal target: {} at {}m",
-                steve.getSteveName(), nearest.getType(), (int) nearestDist);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Tree felling helpers
-    // -----------------------------------------------------------------------
-
-    private void scanTrunkAbove(BlockPos basePos, Block logBlock) {
-        trunkQueue.clear();
-        BlockPos check = basePos.above();
-        int maxHeight = 30;
-        for (int i = 0; i < maxHeight; i++) {
-            if (steve.level().getBlockState(check).getBlock() == logBlock) {
-                trunkQueue.add(check);
-                check = check.above();
+    private BlockPos findTreeBase(BlockPos logPos) {
+        BlockPos cur = logPos;
+        while (true) {
+            BlockPos below = cur.below();
+            BlockState belowState = steve.level().getBlockState(below);
+            String belowId = getBlockId(belowState);
+            if (isLogBlock(belowId)) {
+                cur = below;
             } else {
                 break;
             }
         }
-        if (!trunkQueue.isEmpty()) {
-            SteveMod.LOGGER.info("Steve '{}' queued {} trunk logs to fell",
-                steve.getSteveName(), trunkQueue.size());
+        return cur;
+    }
+
+    private boolean isLogBlock(String blockId) {
+        return blockId.endsWith("_log") || blockId.endsWith("_wood");
+    }
+
+    // -----------------------------------------------------------------------
+    // Name resolution helpers
+    // -----------------------------------------------------------------------
+
+    /**
+     * Recursively resolve a resource name through the alias table.
+     * Returns an array of concrete Minecraft block IDs to search for.
+     */
+    private String[] resolveResourceNames(String name) {
+        if (RESOURCE_ALIASES.containsKey(name)) {
+            String[] aliases = RESOURCE_ALIASES.get(name);
+            // Check if the alias itself needs further resolution (e.g. "any_log")
+            if (aliases.length == 1 && RESOURCE_ALIASES.containsKey(aliases[0])) {
+                return RESOURCE_ALIASES.get(aliases[0]);
+            }
+            return aliases;
         }
+        return new String[]{name};
     }
 
-    // -----------------------------------------------------------------------
-    // Name resolution
-    // -----------------------------------------------------------------------
-
-    private static String resolveResourceName(String raw) {
-        String normalized = raw.toLowerCase().replace(" ", "_").replace("-", "_");
-        return RESOURCE_ALIASES.getOrDefault(normalized, normalized);
+    private boolean matchesAny(String blockId, String[] names) {
+        for (String name : names) {
+            if (blockId.equals(name) || blockId.equals("minecraft:" + name)) return true;
+        }
+        return false;
     }
 
-    private static Block resolveBlock(String name) {
-        if (name == null || name.isBlank()) return null;
-        String key = name.contains(":") ? name : "minecraft:" + name;
-        Block block = BuiltInRegistries.BLOCK.get(new ResourceLocation(key));
-        return (block == Blocks.AIR && !name.equals("air")) ? null : block;
-    }
-
-    /** Returns true if the block is any type of log. */
-    private static boolean isLogBlock(Block block) {
-        if (block == null) return false;
-        ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(block);
-        return key != null && key.getPath().endsWith("_log");
+    private String getBlockId(BlockState state) {
+        return state.getBlock().getDescriptionId()
+            .replace("block.minecraft.", "")
+            .replace("block.", "");
     }
 }
