@@ -311,6 +311,12 @@ public class ActionExecutor {
         SteveMod.LOGGER.info("Steve '{}' executing task: {} (action type: {})", 
             steve.getSteveName(), task, task.getAction());
         
+        // Special handling: "stop" clears the entire queue
+        if ("stop".equals(task.getAction())) {
+            taskQueue.clear();
+            currentGoal = null;
+        }
+
         currentAction = createAction(task);
         
         if (currentAction == null) {
@@ -374,6 +380,9 @@ public class ActionExecutor {
             case "follow" -> new FollowPlayerAction(steve, task);
             case "gather" -> new GatherResourceAction(steve, task);
             case "build" -> new BuildStructureAction(steve, task);
+            case "stop" -> new StopAction(steve, task);
+            case "set_home" -> new SetHomeAction(steve, task);
+            case "return_home" -> new ReturnHomeAction(steve, task);
             default -> {
                 SteveMod.LOGGER.warn("Unknown action type: {}", task.getAction());
                 yield null;
@@ -450,4 +459,3 @@ public class ActionExecutor {
         return isPlanning;
     }
 }
-

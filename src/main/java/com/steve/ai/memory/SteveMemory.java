@@ -1,6 +1,7 @@
 package com.steve.ai.memory;
 
 import com.steve.ai.entity.SteveEntity;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.StringTag;
@@ -17,11 +18,15 @@ public class SteveMemory {
     private final LinkedList<String> recentActions;
     private static final int MAX_RECENT_ACTIONS = 20;
 
+    // Home base position — null means no home set
+    private BlockPos homePosition;
+
     public SteveMemory(SteveEntity steve) {
         this.steve = steve;
         this.currentGoal = "";
         this.taskQueue = new LinkedList<>();
         this.recentActions = new LinkedList<>();
+        this.homePosition = null;
     }
 
     public String getCurrentGoal() {
@@ -56,6 +61,26 @@ public class SteveMemory {
         currentGoal = "";
     }
 
+    // -----------------------------------------------------------------------
+    // Home base
+    // -----------------------------------------------------------------------
+
+    public BlockPos getHomePosition() {
+        return homePosition;
+    }
+
+    public void setHomePosition(BlockPos pos) {
+        this.homePosition = pos;
+    }
+
+    public boolean hasHome() {
+        return homePosition != null;
+    }
+
+    // -----------------------------------------------------------------------
+    // NBT persistence
+    // -----------------------------------------------------------------------
+
     public void saveToNBT(CompoundTag tag) {
         tag.putString("CurrentGoal", currentGoal);
         
@@ -64,6 +89,13 @@ public class SteveMemory {
             actionsList.add(StringTag.valueOf(action));
         }
         tag.put("RecentActions", actionsList);
+
+        // Save home position
+        if (homePosition != null) {
+            tag.putInt("HomeX", homePosition.getX());
+            tag.putInt("HomeY", homePosition.getY());
+            tag.putInt("HomeZ", homePosition.getZ());
+        }
     }
 
     public void loadFromNBT(CompoundTag tag) {
@@ -78,6 +110,10 @@ public class SteveMemory {
                 recentActions.add(actionsList.getString(i));
             }
         }
+
+        // Load home position
+        if (tag.contains("HomeX") && tag.contains("HomeY") && tag.contains("HomeZ")) {
+            homePosition = new BlockPos(tag.getInt("HomeX"), tag.getInt("HomeY"), tag.getInt("HomeZ"));
+        }
     }
 }
-

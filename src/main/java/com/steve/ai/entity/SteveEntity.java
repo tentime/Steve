@@ -8,16 +8,22 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.world.DifficultyInstance;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.List;
 
 public class SteveEntity extends PathfinderMob {
     private static final EntityDataAccessor<String> STEVE_NAME = 
@@ -29,6 +35,10 @@ public class SteveEntity extends PathfinderMob {
     private int tickCounter = 0;
     private boolean isFlying = false;
     private boolean isInvulnerable = false;
+
+    // Inventory — 27 slots (same as a single chest)
+    private final SimpleContainer inventory = new SimpleContainer(27);
+    private static final double PICKUP_RANGE = 3.0;
 
     public SteveEntity(EntityType<? extends PathfinderMob> entityType, Level level) {
         super(entityType, level);
@@ -68,7 +78,96 @@ public class SteveEntity extends PathfinderMob {
         
         if (!this.level().isClientSide) {
             actionExecutor.tick();
+            pickupNearbyItems();
         }
+    }
+
+    /**
+     * Pick up item entities within PICKUP_RANGE.
+     * Items get added to our SimpleContainer inventory.
+     */
+    private void pickupNearbyItems() {
+        // Only check every 5 ticks (4 times per second) to save perf
+        tickCounter++;
+        if (tickCounter % 5 != 0) return;
+
+        AABB pickupBox = this.getBoundingBox().inflate(PICKUP_RANGE);
+        List<ItemEntity> items = this.level().getEntitiesOfClass(ItemEntity.class, pickupBox);
+
+        for (ItemEntity itemEntity : items) {
+            if (itemEntity.isRemoved()) continue;
+            // Items have a short pickup delay after spawning
+            if (itemEntity.hasPickUpDelay()) continue;
+
+            ItemStack stack = itemEntity.getItem();
+            ItemStack remaining = addToInventory(stack.copy());
+
+            if (remaining.isEmpty()) {
+                // Fully picked up
+                itemEntity.discard();
+            } else if (remaining.getCount() < stack.getCount()) {
+                // Partially picked up (inventory almost full)
+                itemEntity.setItem(remaining);
+            }
+            // else: inventory full, leave the item
+        }
+    }
+
+    /**
+     * Try to add an ItemStack to the inventory. Returns whatever could NOT fit.
+     */
+    public ItemStack addToInventory(ItemStack stack) {
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            ItemStack slot = inventory.getItem(i);
+            if (slot.isEmpty()) {
+                inventory.setItem(i, stack);
+                return ItemStack.EMPTY;
+            }
+            if (ItemStack.isSameItemSameTags(slot, stack)) {
+                int canFit = slot.getMaxStackSize() - slot.getCount();
+                if (canFit > 0) {
+                    int transfer = Math.min(canFit, stack.getCount());
+                    slot.grow(transfer);
+                    stack.shrink(transfer);
+                    if (stack.isEmpty()) return ItemStack.EMPTY;
+                }
+            }
+        }
+        return stack; // whatever didn't fit
+    }
+
+    /**
+     * Returns the Steve's item inventory (27 slots).
+     */
+    public SimpleContainer getInventoryContainer() {
+        return inventory;
+    }
+
+    /**
+     * Returns true if the inventory has at least one non-empty slot.
+     */
+    public boolean hasItemsInInventory() {
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            if (!inventory.getItem(i).isEmpty()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns a human-readable summary of inventory contents (for LLM context).
+     */
+    public String getInventorySummary() {
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            ItemStack stack = inventory.getItem(i);
+            if (!stack.isEmpty()) {
+                if (count > 0) sb.append(", ");
+                sb.append(stack.getCount()).append("x ").append(stack.getItem().toString());
+                count++;
+            }
+        }
+        return count == 0 ? "[empty]" : sb.toString();
     }
 
     public void setSteveName(String name) {
@@ -97,6 +196,19 @@ public class SteveEntity extends PathfinderMob {
         CompoundTag memoryTag = new CompoundTag();
         this.memory.saveToNBT(memoryTag);
         tag.put("Memory", memoryTag);
+
+        // Save inventory
+        net.minecraft.nbt.ListTag invList = new net.minecraft.nbt.ListTag();
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            ItemStack stack = inventory.getItem(i);
+            if (!stack.isEmpty()) {
+                CompoundTag slotTag = new CompoundTag();
+                slotTag.putByte("Slot", (byte) i);
+                stack.save(slotTag);
+                invList.add(slotTag);
+            }
+        }
+        tag.put("Inventory", invList);
     }
 
     @Override
@@ -108,6 +220,19 @@ public class SteveEntity extends PathfinderMob {
         
         if (tag.contains("Memory")) {
             this.memory.loadFromNBT(tag.getCompound("Memory"));
+        }
+
+        // Load inventory
+        if (tag.contains("Inventory")) {
+            inventory.clearContent();
+            net.minecraft.nbt.ListTag invList = tag.getList("Inventory", 10); // 10 = Compound type
+            for (int i = 0; i < invList.size(); i++) {
+                CompoundTag slotTag = invList.getCompound(i);
+                int slot = slotTag.getByte("Slot") & 0xFF;
+                if (slot < inventory.getContainerSize()) {
+                    inventory.setItem(slot, ItemStack.of(slotTag));
+                }
+            }
         }
     }
 
@@ -190,4 +315,3 @@ public class SteveEntity extends PathfinderMob {
         return super.causeFallDamage(distance, damageMultiplier, source);
     }
 }
-

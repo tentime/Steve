@@ -76,9 +76,7 @@ public class TaskPlanner {
             if (response == null) {
                 SteveMod.LOGGER.error("Failed to get AI response for command: {}", command);
                 return null;
-            }
-
-            ResponseParser.ParsedResponse parsedResponse = ResponseParser.parseAIResponse(response);
+            }            ResponseParser.ParsedResponse parsedResponse = ResponseParser.parseAIResponse(response);
             
             if (parsedResponse == null) {
                 SteveMod.LOGGER.error("Failed to parse AI response");

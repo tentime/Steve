@@ -362,6 +362,7 @@ public class MineBlockAction extends BaseAction {
         blockName = blockName.toLowerCase().replace(" ", "_");
         
         Map<String, String> resourceToOre = new HashMap<>() {{
+            // Ore shortcuts
             put("iron", "iron_ore");
             put("diamond", "diamond_ore");
             put("coal", "coal_ore");
@@ -370,6 +371,15 @@ public class MineBlockAction extends BaseAction {
             put("redstone", "redstone_ore");
             put("lapis", "lapis_ore");
             put("emerald", "emerald_ore");
+            // Non-ore blocks that can still be mined underground
+            put("stone", "stone");
+            put("cobblestone", "cobblestone");
+            put("obsidian", "obsidian");
+            put("netherrack", "netherrack");
+            put("deepslate", "deepslate");
+            put("ancient_debris", "ancient_debris");
+            put("glowstone", "glowstone");
+            put("amethyst", "amethyst_block");
         }};
         
         if (resourceToOre.containsKey(blockName)) {
@@ -384,4 +394,3 @@ public class MineBlockAction extends BaseAction {
         return BuiltInRegistries.BLOCK.get(resourceLocation);
     }
 }
-
